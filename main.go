@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -25,9 +27,22 @@ func main() {
 	}()
 
 	r := mux.NewRouter()
+	r.Use(middleware)
 	r.HandleFunc("/", handler)
 
 	// start: set up any of your logger configuration here if necessary
+	zerolog.SetGlobalLevel(zerolog.DebugLevel)
+
+	f, err := os.OpenFile("logs/app.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to open log file")
+	}
+	defer f.Close()
+
+	multi := zerolog.MultiLevelWriter(os.Stdout, f)
+	log.Logger = zerolog.New(multi).With().Timestamp().Logger()
+
+	log.Info().Msg("starting http server")
 
 	// end: set up any of your logger configuration here
 
@@ -48,20 +63,50 @@ func main() {
 	}
 }
 
+func middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			log := log.Logger.With().
+				Str("request_id", uuid.New().String()).
+				Str("method", r.Method).
+				Str("url", r.URL.String()).
+				Logger()
+
+			ctx := log.WithContext(r.Context())
+
+			next.ServeHTTP(w, r.WithContext(ctx))
+		},
+	)
+}
+
 func handler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	log := log.Ctx(ctx).With().Str("func", "handler").Logger()
 	name := r.URL.Query().Get("name")
+
+	log.Debug().
+		Str("name", name).
+		Msg("processing handler")
+
 	res, err := greeting(ctx, name)
 	if err != nil {
+		log.Error().Err(err).Msg("failed to process request")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	log.Info().Msg("processed request successfully")
+
 	w.Write([]byte(res))
 }
 
 func greeting(ctx context.Context, name string) (string, error) {
+	log := log.Ctx(ctx).With().Str("func", "greeting").Logger()
 	if len(name) < 5 {
+		log.Warn().Msgf("name is too short: %s", name)
 		return fmt.Sprintf("Hello %s! Your name is to short\n", name), nil
 	}
+
+	log.Debug().Msgf("name is long enough: %s", name)
 	return fmt.Sprintf("Hi %s", name), nil
 }
