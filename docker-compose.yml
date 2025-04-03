@@ -8,6 +8,29 @@ services:
       - ./scripts/grafana/provisioning:/etc/grafana/provisioning
       - ./scripts/grafana/dashboards:/etc/grafana/demo-dashboards
       - grafana_data:/var/lib/grafana
-
+  fluentbit:
+    image: fluent/fluent-bit:2.1.10
+    ports:
+      - "24224:24224"
+      - "24224:24224/udp"
+    volumes:
+      - ./scripts/fluentbit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf
+      - ./logs:/app/logs
+  nginx:
+    image: nginx
+    ports:
+      - "80:80"
+    logging:
+      driver: fluentd
+      options:
+        tag: nginx
+        fluentd-sub-second-precision: 'true'
+  loki:
+    image: grafana/loki:2.9.2
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./scripts/loki:/etc/loki
+    command: -config.file=/etc/loki/config.yaml
 volumes:
   grafana_data:

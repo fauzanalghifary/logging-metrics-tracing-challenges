@@ -103,7 +103,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 func greeting(ctx context.Context, name string) (string, error) {
 	log := log.Ctx(ctx).With().Str("func", "greeting").Logger()
 	if len(name) < 5 {
-		log.Warn().Msgf("name is too short: %s", name)
+		log.Warn().Msgf("name is too short %s", name)
 		return fmt.Sprintf("Hello %s! Your name is to short\n", name), nil
 	}
 
