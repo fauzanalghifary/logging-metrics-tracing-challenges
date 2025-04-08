@@ -4,27 +4,29 @@ import (
 	"context"
 	"fmt"
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/prometheus"
+	otelmetric "go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
+	semconv "go.opentelemetry.io/otel/semconv/v1.10.0"
 )
 
-var (
-	reqCountProcessed = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "http_request_count",
-			Help: "The total number of processed by handler",
-		}, []string{"method", "endpoint"},
-	)
-)
+var meter otelmetric.Meter
+var reqHistogram otelmetric.Float64Histogram
 
 func main() {
 	ctx := context.Background()
@@ -38,10 +40,58 @@ func main() {
 		cancel()
 	}()
 
+	res, err := resource.New(
+		ctx,
+		resource.WithAttributes(
+			semconv.ServiceNameKey.String("logging-challenge"),
+		),
+	)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to create resource")
+	}
+
+	// set up the OpenTelemetry Prometheus exporter
+	exporter, err := prometheus.New()
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to create prometheus exporter")
+	}
+
+	// set up the OpenTelemetry meter provider
+	meterProvider := metric.NewMeterProvider(
+		metric.WithResource(res),
+		metric.WithReader(exporter),
+	)
+	otel.SetMeterProvider(meterProvider)
+
+	meter = otel.Meter("logging-challenge")
+	reqHistogram, err = meter.Float64Histogram(
+		"http_request_duration_milliseconds",
+		otelmetric.WithUnit("milliseconds"),
+		otelmetric.WithDescription("Histogram of HTTP request duration in milliseconds"),
+		otelmetric.WithExplicitBucketBoundaries(
+			[]float64{
+				0,
+				100,
+				200,
+				300,
+				400,
+				500,
+				600,
+				700,
+				800,
+				900,
+				1000,
+			}...,
+		),
+	)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to create histogram")
+	}
+
 	r := mux.NewRouter()
 	r.Use(middleware)
-	r.HandleFunc("/", handler)
-	r.Handle("/metrics", promhttp.Handler())
+	r.Handle("/", otelhttp.WithRouteTag("/", http.HandlerFunc(handler)))
+	r.Handle("/metrics", otelhttp.WithRouteTag("/metrics", promhttp.Handler()))
 
 	// start: set up any of your logger configuration here if necessary
 	zerolog.SetGlobalLevel(zerolog.DebugLevel)
@@ -61,7 +111,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:    ":8080",
-		Handler: r,
+		Handler: otelhttp.NewHandler(r, "/"),
 	}
 
 	go func() {
@@ -84,17 +134,31 @@ func middleware(next http.Handler) http.Handler {
 				Str("method", r.Method).
 				Str("url", r.URL.String()).
 				Logger()
-
 			ctx := log.WithContext(r.Context())
 
+			// calculate time elapsed
+			start := time.Now()
 			next.ServeHTTP(w, r.WithContext(ctx))
+			elapsed := time.Since(start)
+			elapsed_ms := float64(elapsed.Nanoseconds()) / 1e6
+
+			log.Info().
+				Float64("elapsed", float64(elapsed.Nanoseconds())/1e6).
+				Msg("request completed")
+			reqHistogram.Record(
+				ctx,
+				elapsed_ms,
+				otelmetric.WithAttributes(
+					attribute.String("url", r.URL.String()),
+					attribute.String("method", r.Method),
+				),
+			)
+
 		},
 	)
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
-	reqCountProcessed.With(prometheus.Labels{"method": r.Method, "endpoint": r.URL.Path}).Inc()
-
 	ctx := r.Context()
 	log := log.Ctx(ctx).With().Str("func", "handler").Logger()
 	name := r.URL.Query().Get("name")
