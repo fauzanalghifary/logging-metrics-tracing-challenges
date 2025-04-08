@@ -3,7 +3,7 @@ services:
   grafana:
     image: grafana/grafana:latest
     ports:
-      - 3002:3000
+      - 3000:3000
     volumes:
       - ./scripts/grafana/provisioning:/etc/grafana/provisioning
       - ./scripts/grafana/dashboards:/etc/grafana/demo-dashboards
@@ -32,5 +32,46 @@ services:
     volumes:
       - ./scripts/loki:/etc/loki
     command: -config.file=/etc/loki/config.yaml
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./scripts/prometheus:/etc/prometheus
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=5m'
+      - '--storage.tsdb.retention.size=10GB'
+  node_exporter:
+    image: quay.io/prometheus/node-exporter:latest
+    command:
+      - '--path.rootfs=/host'
+    restart: unless-stopped
+    volumes:
+      - '/:/host:ro,rslave'
+    ports:
+      - 9100:9100
+  postgres:
+    image: postgres:16
+    command: postgres -c 'max_connections=1000'
+    environment:
+      POSTGRES_DB: course
+      POSTGRES_USER: course
+      POSTGRES_PASSWORD: course
+    ports:
+      - "15432:5432"
+    restart: always
+    volumes:
+      - postgres:/var/lib/postgresql/data/
+  postgres_exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:latest
+    environment:
+      DATA_SOURCE_NAME: "postgresql://course:course@postgres:5432/course?sslmode=disable"
+    restart: always
+    depends_on:
+      - postgres
 volumes:
   grafana_data:
+  prometheus_data:
+  postgres:
